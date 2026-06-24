@@ -1,244 +1,523 @@
 	<!DOCTYPE html>
-	<html lang="zh-CN">
-	<head>
-	    <meta charset="UTF-8">
-	    <title>公证处期货交易终端 v1.1</title>
-	    <!-- 引入 98.css 框架，直接通过 CDN 加载，无需下载 -->
-	    <link rel="stylesheet" href="https://unpkg.com/98.css@0.1.20/dist/98.css">
-	    <style>
-	        body {
-	            background: #008080; /* 经典 Win95 蓝绿桌面背景 */
-	            margin: 0;
-	            padding: 20px;
-	            font-family: "MS Sans Serif", "Microsoft YaHei", sans-serif;
-	            overflow: hidden;
-	            height: 100vh;
-	            box-sizing: border-box;
-	        }
-	        .window {
-	            width: 100%;
-	            max-width: 800px;
-	            margin: 0 auto;
-	            display: flex;
-	            flex-direction: column;
-	        }
-	        .window-body {
-	            flex: 1;
-	            overflow: hidden;
-	            display: flex;
-	            flex-direction: column;
-	            gap: 10px;
-	        }
-	        .market-container {
-	            display: flex;
-	            gap: 10px;
-	            height: 350px;
-	        }
-	        .list-box {
-	            width: 100%;
-	            height: 100%;
-	            overflow-y: auto;
-	            background: white;
-	            border: 2px inset #ddd;
-	            font-size: 12px;
-	        }
-	        .list-item {
-	            padding: 4px 6px;
-	            cursor: pointer;
-	            border-bottom: 1px dotted #ccc;
-	            display: flex;
-	            justify-content: space-between;
-	        }
-	        .list-item:hover {
-	            background: #navy;
-	            color: white;
-	        }
-	        .list-item.selected {
-	            background: #000080;
-	            color: white;
-	        }
-	        .log-box {
-	            height: 120px;
-	            overflow-y: auto;
-	            background: #000;
-	            color: #0f0;
-	            font-family: 'Courier New', monospace;
-	            font-size: 12px;
-	            padding: 5px;
-	            border: 2px inset #ddd;
-	        }
-	        .status-bar {
-	            font-size: 12px;
-	        }
-	        .trade-panel {
-	            display: flex;
-	            align-items: center;
-	            gap: 10px;
-	            padding: 10px;
-	            background: #c0c0c0;
-	            border: 2px groove #ddd;
-	        }
-	        .trade-panel input {
-	            width: 80px;
-	        }
-	    </style>
-	</head>
-	<body>
-	    <div class="window">
-	        <div class="title-bar">
-	            <div class="title-bar-text">📉 公证处期货交易终端 - v1.1</div>
-	            <div class="title-bar-controls">
-	                <button aria-label="Minimize"></button>
-	                <button aria-label="Maximize"></button>
-	                <button aria-label="Close"></button>
-	            </div>
-	        </div>
-	        <div class="window-body">
-	            <!-- 顶部账户状态 -->
-	            <div class="status-bar">
-	                <p class="status-bar-field">当前玩家: <span id="player-id">加载中...</span></p>
-	                <p class="status-bar-field">💰 现金: <strong id="player-cash">0</strong> 钞</p>
-	                <p class="status-bar-field"> selectedItem: <span id="selected-item">无</span></p>
-	            </div>
-	            <!-- 市场列表 -->
-	            <div class="market-container">
-	                <fieldset style="flex: 1; display: flex; flex-direction: column;">
-	                    <legend>矿石市场</legend>
-	                    <div id="stones-list" class="list-box"></div>
-	                </fieldset>
-	                <fieldset style="flex: 1; display: flex; flex-direction: column;">
-	                    <legend>兔子市场</legend>
-	                    <div id="rabbits-list" class="list-box"></div>
-	                </fieldset>
-	            </div>
-	            <!-- 交易面板 -->
-	            <div class="trade-panel">
-	                <label>数量:</label>
-	                <input type="number" id="trade-qty" value="1" min="1">
-	                <button id="btn-buy" style="width: 80px;">买入</button>
-	                <button id="btn-sell" style="width: 80px;">卖出</button>
-	                <div style="flex: 1;"></div>
-	                <label>我的持仓:</label>
-	                <span id="player-holding" style="font-weight: bold;">0</span>
-	            </div>
-	            <!-- 系统日志 -->
-	            <fieldset>
-	                <legend>系统日志</legend>
-	                <div id="log-box" class="log-box">系统启动中...\n</div>
-	            </fieldset>
-	        </div>
-	    </div>
-	    <script>
-	        // 获取URL中的玩家ID，如果没有则随机生成一个
-	        const urlParams = new URLSearchParams(window.location.search);
-	        let playerId = urlParams.get('player_id');
-	        if (!playerId) {
-	            playerId = '玩家_' + Math.floor(Math.random() * 10000);
-	            // 实际应用中这里可以跳转到登录页，这里为了测试直接随机
-	        }
-	        document.getElementById('player-id').innerText = playerId;
-	        // WebSocket 连接
-	        const ws = new WebSocket(`ws://${window.location.host}/ws/${playerId}`);
-	        // 运行时状态
-	        let currentMarket = { stones: {}, rabbits: {} };
-	        let playerData = { cash: 0, stones: {}, rabbits: {} };
-	        let selectedCategory = null;
-	        let selectedItem = null;
-	        // DOM 元素
-	        const logBox = document.getElementById('log-box');
-	        function log(msg) {
-	            const time = new Date().toLocaleTimeString();
-	            logBox.innerHTML += `[${time}] ${msg}<br>`;
-	            logBox.scrollTop = logBox.scrollHeight;
-	        }
-	        // 渲染市场列表
-	        function renderMarket() {
-	            const stonesList = document.getElementById('stones-list');
-	            const rabbitsList = document.getElementById('rabbits-list');
-	            stonesList.innerHTML = '';
-	            rabbitsList.innerHTML = '';
-	            for (const [name, price] of Object.entries(currentMarket.stones)) {
-	                const div = document.createElement('div');
-	                div.className = 'list-item';
-	                if (selectedCategory === 'stones' && selectedItem === name) div.classList.add('selected');
-	                div.innerHTML = `<span>${name}</span> <span>${price.toFixed(0)} 钞</span>`;
-	                div.onclick = () => selectItem('stones', name);
-	                stonesList.appendChild(div);
-	            }
-	            for (const [name, price] of Object.entries(currentMarket.rabbits)) {
-	                const div = document.createElement('div');
-	                div.className = 'list-item';
-	                if (selectedCategory === 'rabbits' && selectedItem === name) div.classList.add('selected');
-	                div.innerHTML = `<span>${name}</span> <span>${price.toFixed(0)} 钞</span>`;
-	                div.onclick = () => selectItem('rabbits', name);
-	                rabbitsList.appendChild(div);
-	            }
-	        }
-	        // 渲染玩家状态
-	        function renderPlayer() {
-	            document.getElementById('player-cash').innerText = playerData.cash.toFixed(0);
-	            if (selectedItem && selectedCategory) {
-	                const holding = playerData[selectedCategory][selectedItem] || 0;
-	                document.getElementById('player-holding').innerText = holding;
-	            } else {
-	                document.getElementById('player-holding').innerText = '0';
-	            }
-	        }
-	        // 选中商品
-	        function selectItem(category, item) {
-	            selectedCategory = category;
-	            selectedItem = item;
-	            document.getElementById('selected-item').innerText = `${item} (${category})`;
-	            renderMarket();
-	            renderPlayer();
-	        }
-	        // 发送交易请求
-	        function trade(is_buy) {
-	            if (!selectedItem || !selectedCategory) {
-	                alert("请先在市场列表中选择一种商品！");
-	                return;
-	            }
-	            const qty = parseFloat(document.getElementById('trade-qty').value);
-	            if (isNaN(qty) || qty <= 0) {
-	                alert("请输入有效的数量！");
-	                return;
-	            }
-	            ws.send(JSON.stringify({
-	                action: is_buy ? "buy" : "sell",
-	                category: selectedCategory,
-	                item: selectedItem,
-	                qty: qty
-	            }));
-	        }
-	        // 绑定按钮事件
-	        document.getElementById('btn-buy').onclick = () => trade(true);
-	        document.getElementById('btn-sell').onclick = () => trade(false);
-	        // WebSocket 事件处理
-	        ws.onopen = () => log("已连接到交易服务器。");
-	        ws.onmessage = (event) => {
-	            const msg = JSON.parse(event.data);
-	            switch(msg.type) {
-	                case 'market':
-	                    currentMarket = { stones: msg.stones, rabbits: msg.rabbits };
-	                    renderMarket();
-	                    break;
-	                case 'player':
-	                    playerData = msg.data;
-	                    renderPlayer();
-	                    break;
-	                case 'trade_ok':
-	                    log(`✅ ${msg.msg}`);
-	                    break;
-	                case 'error':
-	                    log(`❌ 错误: ${msg.msg}`);
-	                    break;
-	                case 'event':
-	                    log(`📢 公告: ${msg.msg}`);
-	                    break;
-	            }
-	        };
-	        ws.onclose = () => log("⚠️ 与服务器断开连接。");
-	        ws.onerror = () => log("⚠️ 连接发生错误。");
-	    </script>
-	</body>
-	</html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>公证所交易市场</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0f1117;
+    color: #e0e0e0;
+    min-height: 100vh;
+  }
+
+  /* ── 登录界面 ── */
+  #login-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    gap: 16px;
+  }
+  #login-screen h1 { font-size: 2rem; letter-spacing: 0.1em; color: #f0c040; }
+  #login-screen p  { color: #888; font-size: 0.9rem; }
+  #login-screen input {
+    padding: 10px 16px;
+    font-size: 1rem;
+    border-radius: 6px;
+    border: 1px solid #333;
+    background: #1a1d27;
+    color: #e0e0e0;
+    width: 220px;
+    text-align: center;
+  }
+  #login-screen button {
+    padding: 10px 32px;
+    background: #f0c040;
+    color: #111;
+    border: none;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  #login-screen button:hover { background: #ffd555; }
+
+  /* ── 主界面 ── */
+  #app { display: none; flex-direction: column; height: 100vh; }
+
+  /* 顶栏 */
+  #topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    background: #1a1d27;
+    border-bottom: 1px solid #2a2d3a;
+    flex-shrink: 0;
+  }
+  #topbar .title { font-size: 1.1rem; color: #f0c040; font-weight: bold; letter-spacing: 0.05em; }
+  #topbar .player-info { font-size: 0.85rem; color: #aaa; }
+  #topbar .cash { color: #4ecdc4; font-weight: bold; font-size: 1rem; }
+
+  /* 通知栏 */
+  #notice {
+    padding: 6px 20px;
+    background: #12151f;
+    font-size: 0.8rem;
+    color: #888;
+    border-bottom: 1px solid #2a2d3a;
+    min-height: 28px;
+    flex-shrink: 0;
+    transition: color 0.3s;
+  }
+  #notice.ok    { color: #4ecdc4; }
+  #notice.err   { color: #ff6b6b; }
+  #notice.event { color: #f0c040; font-weight: bold; }
+
+  /* 标签页 */
+  #tabs {
+    display: flex;
+    background: #1a1d27;
+    border-bottom: 1px solid #2a2d3a;
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 10px 24px;
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    font-size: 0.9rem;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+  }
+  .tab-btn:hover { color: #aaa; }
+  .tab-btn.active { color: #f0c040; border-bottom-color: #f0c040; }
+
+  /* 内容区 */
+  #content { flex: 1; overflow: hidden; }
+  .tab-panel { display: none; height: 100%; overflow-y: auto; padding: 16px 20px; }
+  .tab-panel.active { display: block; }
+
+  /* 敬请期待面板 */
+  .coming-soon {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    gap: 12px;
+    color: #444;
+  }
+  .coming-soon .big { font-size: 3rem; }
+  .coming-soon h2   { font-size: 1.2rem; color: #555; }
+  .coming-soon p    { font-size: 0.85rem; }
+
+  /* ── 市场表格 ── */
+  .market-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  .market-table th {
+    background: #1a1d27;
+    color: #888;
+    padding: 8px 10px;
+    text-align: left;
+    position: sticky;
+    top: 0;
+    font-weight: normal;
+    border-bottom: 1px solid #2a2d3a;
+  }
+  .market-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #1e2130;
+    vertical-align: middle;
+  }
+  .market-table tr:hover td { background: #1a1d27; }
+
+  .price-cell  { font-weight: bold; color: #f0c040; }
+  .price-up    { color: #ff6b6b !important; }
+  .price-down  { color: #4ecdc4 !important; }
+  .desc-cell   { color: #666; font-size: 0.78rem; max-width: 220px; }
+  .holding-cell { color: #888; font-size: 0.8rem; }
+
+  /* 操作区 */
+  .trade-cell { display: flex; gap: 6px; align-items: center; }
+  .qty-input {
+    width: 70px;
+    padding: 4px 8px;
+    background: #12151f;
+    border: 1px solid #2a2d3a;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-size: 0.82rem;
+  }
+  .qty-input:focus { outline: none; border-color: #f0c040; }
+  .btn-buy, .btn-sell {
+    padding: 4px 12px;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    font-weight: bold;
+  }
+  .btn-buy  { background: #2d6a4f; color: #a8daba; }
+  .btn-sell { background: #6a2d2d; color: #daa8a8; }
+  .btn-buy:hover  { background: #3a8a65; }
+  .btn-sell:hover { background: #8a3a3a; }
+
+  /* 连接状态点 */
+  #conn-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #ff6b6b;
+    margin-right: 6px;
+  }
+  #conn-dot.on { background: #4ecdc4; }
+
+  /* 市场异动弹窗 */
+  #event-banner {
+    display: none;
+    position: fixed;
+    top: 60px; left: 50%;
+    transform: translateX(-50%);
+    background: #1a1410;
+    border: 1px solid #f0c040;
+    color: #f0c040;
+    padding: 10px 24px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    z-index: 999;
+    max-width: 90vw;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+</style>
+</head>
+<body>
+
+<!-- 登录界面 -->
+<div id="login-screen">
+  <h1>公证所交易市场</h1>
+  <p>输入你的玩家名进入交易所</p>
+  <input id="name-input" type="text" placeholder="玩家名" maxlength="16">
+  <button onclick="login()">进入</button>
+</div>
+
+<!-- 市场异动弹窗 -->
+<div id="event-banner"></div>
+
+<!-- 主界面 -->
+<div id="app">
+  <div id="topbar">
+    <span class="title">📈 公证所交易市场 <span style="font-size:0.65rem;color:#555;font-weight:normal;">v1.1</span></span>
+    <span class="player-info">
+      <span id="conn-dot"></span>
+      <span id="player-name-label"></span>
+      &nbsp;｜&nbsp;
+      持有：<span class="cash" id="cash-label">—</span> 钞
+    </span>
+  </div>
+
+  <div id="notice">等待市场数据…</div>
+
+  <div id="tabs">
+    <button class="tab-btn active" onclick="switchTab('stones')">稀有金属</button>
+    <button class="tab-btn"       onclick="switchTab('rabbits')">缝纫机兔</button>
+    <button class="tab-btn"       onclick="switchTab('guns')">枪械配件</button>
+    <button class="tab-btn"       onclick="switchTab('pets')">狩猎伙伴</button>
+  </div>
+
+  <div id="content">
+
+    <!-- 稀有金属 -->
+    <div class="tab-panel active" id="panel-stones">
+      <table class="market-table">
+        <thead>
+          <tr>
+            <th>材料</th>
+            <th>当前价（钞/kg）</th>
+            <th>持仓（kg）</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="stones-body"></tbody>
+      </table>
+    </div>
+
+    <!-- 缝纫机兔 -->
+    <div class="tab-panel" id="panel-rabbits">
+      <table class="market-table">
+        <thead>
+          <tr>
+            <th>兔子</th>
+            <th>当前价（钞/只）</th>
+            <th>持仓（只）</th>
+            <th>描述</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="rabbits-body"></tbody>
+      </table>
+    </div>
+
+    <!-- 枪械配件 -->
+    <div class="tab-panel" id="panel-guns">
+      <div class="coming-soon">
+        <div class="big">🔧</div>
+        <h2>枪械配件</h2>
+        <p>敬请期待</p>
+      </div>
+    </div>
+
+    <!-- 狩猎伙伴 -->
+    <div class="tab-panel" id="panel-pets">
+      <div class="coming-soon">
+        <div class="big">🐾</div>
+        <h2>狩猎伙伴</h2>
+        <p>敬请期待</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+let ws = null;
+let playerId   = "";
+let playerData = { cash: 0, stones: {}, rabbits: {} };
+let marketData  = { stones: {}, rabbits: {} };
+let lastPrices  = { stones: {}, rabbits: {} };
+
+const RABBIT_DESCS = {
+  "雪怪兔":   "过于夸张的大兔脚。",
+  "圣花兔":   "缝纫机头缠绕着荆棘的兔子。",
+  "三角洲兔": "背上有A字红色标记的网格毛色兔子。",
+  "海豹兔":   "有大胡子和纹身的兔子。",
+  "\"水\"兔": "全身都像泡在低饱和像素中的兔子。",
+  "素子兔":   "全身机械的兔子，能像祈臣一样隐身。",
+  "火锅兔":   "毛色像火锅一般。",
+  "烩面兔":   "毛色长短不均，像白汤中的面条。",
+  "生煎兔":   "太过哈韩，有高丽旗纹身的兔子。",
+  "主任兔":   "脾气暴躁的兔子，爱国之心毋庸置疑。",
+  "花旗兔":   "不要对它说俄语。",
+  "太子兔":   "全身被阴影覆盖，只能看到剪影的神秘兔子。",
+  "千禧年":   "头部有个电子屏，显示hello world。",
+  "法官兔":   "赵志先生。",
+  "清华兔":   "穿着中山装的兔子。",
+};
+
+// ── 登录 ──
+function login() {
+  const name = document.getElementById("name-input").value.trim();
+  if (!name) return;
+  playerId = name;
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("app").style.display = "flex";
+  document.getElementById("player-name-label").textContent = name;
+  connectWS();
+}
+document.getElementById("name-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") login();
+});
+
+// ── WebSocket ──
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws/${encodeURIComponent(playerId)}`);
+  ws.onopen  = () => document.getElementById("conn-dot").classList.add("on");
+  ws.onclose = () => {
+    document.getElementById("conn-dot").classList.remove("on");
+    setTimeout(connectWS, 3000);
+  };
+  ws.onmessage = e => handleMsg(JSON.parse(e.data));
+}
+
+function handleMsg(msg) {
+  if (msg.type === "market") {
+    lastPrices.stones  = { ...marketData.stones };
+    lastPrices.rabbits = { ...marketData.rabbits };
+    marketData.stones  = msg.stones;
+    marketData.rabbits = msg.rabbits;
+    renderMarket();
+  } else if (msg.type === "player") {
+    playerData = msg.data;
+    renderPlayer();
+  } else if (msg.type === "trade_ok") {
+    playerData = msg.data;
+    renderPlayer();
+    showNotice(msg.msg, "ok");
+  } else if (msg.type === "error") {
+    showNotice(msg.msg, "err");
+  }
+}
+
+// ── 通知栏 ──
+let noticeTimer = null;
+function showNotice(text, cls) {
+  const el = document.getElementById("notice");
+  el.textContent = text;
+  el.className   = cls;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.textContent = ""; el.className = ""; }, 6000);
+}
+
+// ── 市场异动弹窗 ──
+let bannerTimer = null;
+function showEventBanner(text) {
+  const el = document.getElementById("event-banner");
+  el.textContent   = text;
+  el.style.display = "block";
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => { el.style.display = "none"; }, 8000);
+}
+
+// ── 玩家信息 ──
+function renderPlayer() {
+  document.getElementById("cash-label").textContent =
+    Math.floor(playerData.cash).toLocaleString();
+  renderMarket();
+}
+
+// ── 标签页 ──
+function switchTab(name) {
+  const names = ["stones","rabbits","guns","pets"];
+  document.querySelectorAll(".tab-btn").forEach((b, i) =>
+    b.classList.toggle("active", names[i] === name));
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+  document.getElementById("panel-" + name).classList.add("active");
+}
+
+// ── 渲染市场 ──
+function renderMarket() { renderStones(); renderRabbits(); }
+
+function priceClass(item, cat) {
+  const cur  = marketData[cat][item];
+  const last = lastPrices[cat][item];
+  if (!last || cur === last) return "";
+  return cur > last ? "price-up" : "price-down";
+}
+
+function renderStones() {
+  const tbody = document.getElementById("stones-body");
+  tbody.innerHTML = "";
+  let idx = 0;
+  for (const [name, price] of Object.entries(marketData.stones)) {
+    const holding = (playerData.stones && playerData.stones[name]) || 0;
+    const cls = priceClass(name, "stones");
+    const inputId = `sq-${idx++}`;
+
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    tdName.textContent = name;
+
+    const tdPrice = document.createElement("td");
+    tdPrice.className = `price-cell ${cls}`;
+    tdPrice.textContent = Math.floor(price).toLocaleString();
+
+    const tdHolding = document.createElement("td");
+    tdHolding.className = "holding-cell";
+    tdHolding.textContent = holding > 0 ? holding.toLocaleString() : "—";
+
+    const tdTrade = document.createElement("td");
+    const wrap = document.createElement("div");
+    wrap.className = "trade-cell";
+
+    const input = document.createElement("input");
+    input.className = "qty-input";
+    input.type = "number";
+    input.min = "0.1";
+    input.step = "0.1";
+    input.value = "1";
+    input.id = inputId;
+
+    const btnBuy = document.createElement("button");
+    btnBuy.className = "btn-buy";
+    btnBuy.textContent = "买";
+    btnBuy.addEventListener("click", () => trade("stones", name, "buy", inputId));
+
+    const btnSell = document.createElement("button");
+    btnSell.className = "btn-sell";
+    btnSell.textContent = "卖";
+    btnSell.addEventListener("click", () => trade("stones", name, "sell", inputId));
+
+    wrap.append(input, btnBuy, btnSell);
+    tdTrade.appendChild(wrap);
+    tr.append(tdName, tdPrice, tdHolding, tdTrade);
+    tbody.appendChild(tr);
+  }
+}
+
+function renderRabbits() {
+  const tbody = document.getElementById("rabbits-body");
+  tbody.innerHTML = "";
+  let idx = 0;
+  for (const [name, price] of Object.entries(marketData.rabbits)) {
+    const holding = (playerData.rabbits && playerData.rabbits[name]) || 0;
+    const cls = priceClass(name, "rabbits");
+    const inputId = `rq-${idx++}`;
+
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    tdName.textContent = name;
+
+    const tdPrice = document.createElement("td");
+    tdPrice.className = `price-cell ${cls}`;
+    tdPrice.textContent = Math.floor(price).toLocaleString();
+
+    const tdHolding = document.createElement("td");
+    tdHolding.className = "holding-cell";
+    tdHolding.textContent = holding > 0 ? holding : "—";
+
+    const tdDesc = document.createElement("td");
+    tdDesc.className = "desc-cell";
+    tdDesc.textContent = RABBIT_DESCS[name] || "";
+
+    const tdTrade = document.createElement("td");
+    const wrap = document.createElement("div");
+    wrap.className = "trade-cell";
+
+    const input = document.createElement("input");
+    input.className = "qty-input";
+    input.type = "number";
+    input.min = "1";
+    input.step = "1";
+    input.value = "1";
+    input.id = inputId;
+
+    const btnBuy = document.createElement("button");
+    btnBuy.className = "btn-buy";
+    btnBuy.textContent = "买";
+    btnBuy.addEventListener("click", () => trade("rabbits", name, "buy", inputId));
+
+    const btnSell = document.createElement("button");
+    btnSell.className = "btn-sell";
+    btnSell.textContent = "卖";
+    btnSell.addEventListener("click", () => trade("rabbits", name, "sell", inputId));
+
+    wrap.append(input, btnBuy, btnSell);
+    tdTrade.appendChild(wrap);
+    tr.append(tdName, tdPrice, tdHolding, tdDesc, tdTrade);
+    tbody.appendChild(tr);
+  }
+}
+
+// ── 发送交易 ──
+function trade(category, item, action, inputId) {
+  const input = document.getElementById(inputId);
+  const qty   = parseFloat(input ? input.value : 1);
+  if (!qty || qty <= 0) { showNotice("请输入有效数量", "err"); return; }
+  ws.send(JSON.stringify({ action, category, item, qty }));
+}
+</script>
+</body>
+</html>
