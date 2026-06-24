@@ -217,7 +217,7 @@
 <!-- 主界面 -->
 <div id="app">
   <div id="topbar">
-    <span class="title">📈 公证所交易市场</span>
+    <span class="title">📈 公证所交易市场 <span style="font-size:0.65rem;color:#555;font-weight:normal;">v1.1</span></span>
     <span class="player-info">
       <span id="conn-dot"></span>
       <span id="player-name-label"></span>
@@ -408,22 +408,50 @@ function priceClass(item, cat) {
 function renderStones() {
   const tbody = document.getElementById("stones-body");
   tbody.innerHTML = "";
+  let idx = 0;
   for (const [name, price] of Object.entries(marketData.stones)) {
     const holding = (playerData.stones && playerData.stones[name]) || 0;
     const cls = priceClass(name, "stones");
-    const tr  = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${name}</td>
-      <td class="price-cell ${cls}">${Math.floor(price).toLocaleString()}</td>
-      <td class="holding-cell">${holding > 0 ? holding.toLocaleString() : "—"}</td>
-      <td>
-        <div class="trade-cell">
-          <input class="qty-input" type="number" min="0.1" step="0.1" value="1"
-                 id="sq-${CSS.escape(name)}">
-          <button class="btn-buy"  onclick="trade('stones','${name}','buy')">买</button>
-          <button class="btn-sell" onclick="trade('stones','${name}','sell')">卖</button>
-        </div>
-      </td>`;
+    const inputId = `sq-${idx++}`;
+
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    tdName.textContent = name;
+
+    const tdPrice = document.createElement("td");
+    tdPrice.className = `price-cell ${cls}`;
+    tdPrice.textContent = Math.floor(price).toLocaleString();
+
+    const tdHolding = document.createElement("td");
+    tdHolding.className = "holding-cell";
+    tdHolding.textContent = holding > 0 ? holding.toLocaleString() : "—";
+
+    const tdTrade = document.createElement("td");
+    const wrap = document.createElement("div");
+    wrap.className = "trade-cell";
+
+    const input = document.createElement("input");
+    input.className = "qty-input";
+    input.type = "number";
+    input.min = "0.1";
+    input.step = "0.1";
+    input.value = "1";
+    input.id = inputId;
+
+    const btnBuy = document.createElement("button");
+    btnBuy.className = "btn-buy";
+    btnBuy.textContent = "买";
+    btnBuy.addEventListener("click", () => trade("stones", name, "buy", inputId));
+
+    const btnSell = document.createElement("button");
+    btnSell.className = "btn-sell";
+    btnSell.textContent = "卖";
+    btnSell.addEventListener("click", () => trade("stones", name, "sell", inputId));
+
+    wrap.append(input, btnBuy, btnSell);
+    tdTrade.appendChild(wrap);
+    tr.append(tdName, tdPrice, tdHolding, tdTrade);
     tbody.appendChild(tr);
   }
 }
@@ -431,32 +459,62 @@ function renderStones() {
 function renderRabbits() {
   const tbody = document.getElementById("rabbits-body");
   tbody.innerHTML = "";
+  let idx = 0;
   for (const [name, price] of Object.entries(marketData.rabbits)) {
     const holding = (playerData.rabbits && playerData.rabbits[name]) || 0;
     const cls = priceClass(name, "rabbits");
-    const tr  = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${name}</td>
-      <td class="price-cell ${cls}">${Math.floor(price).toLocaleString()}</td>
-      <td class="holding-cell">${holding > 0 ? holding : "—"}</td>
-      <td class="desc-cell">${RABBIT_DESCS[name] || ""}</td>
-      <td>
-        <div class="trade-cell">
-          <input class="qty-input" type="number" min="1" step="1" value="1"
-                 id="rq-${CSS.escape(name)}">
-          <button class="btn-buy"  onclick="trade('rabbits','${name}','buy')">买</button>
-          <button class="btn-sell" onclick="trade('rabbits','${name}','sell')">卖</button>
-        </div>
-      </td>`;
+    const inputId = `rq-${idx++}`;
+
+    const tr = document.createElement("tr");
+
+    const tdName = document.createElement("td");
+    tdName.textContent = name;
+
+    const tdPrice = document.createElement("td");
+    tdPrice.className = `price-cell ${cls}`;
+    tdPrice.textContent = Math.floor(price).toLocaleString();
+
+    const tdHolding = document.createElement("td");
+    tdHolding.className = "holding-cell";
+    tdHolding.textContent = holding > 0 ? holding : "—";
+
+    const tdDesc = document.createElement("td");
+    tdDesc.className = "desc-cell";
+    tdDesc.textContent = RABBIT_DESCS[name] || "";
+
+    const tdTrade = document.createElement("td");
+    const wrap = document.createElement("div");
+    wrap.className = "trade-cell";
+
+    const input = document.createElement("input");
+    input.className = "qty-input";
+    input.type = "number";
+    input.min = "1";
+    input.step = "1";
+    input.value = "1";
+    input.id = inputId;
+
+    const btnBuy = document.createElement("button");
+    btnBuy.className = "btn-buy";
+    btnBuy.textContent = "买";
+    btnBuy.addEventListener("click", () => trade("rabbits", name, "buy", inputId));
+
+    const btnSell = document.createElement("button");
+    btnSell.className = "btn-sell";
+    btnSell.textContent = "卖";
+    btnSell.addEventListener("click", () => trade("rabbits", name, "sell", inputId));
+
+    wrap.append(input, btnBuy, btnSell);
+    tdTrade.appendChild(wrap);
+    tr.append(tdName, tdPrice, tdHolding, tdDesc, tdTrade);
     tbody.appendChild(tr);
   }
 }
 
 // ── 发送交易 ──
-function trade(category, item, action) {
-  const prefix  = category === "stones" ? "sq" : "rq";
-  const input   = document.getElementById(`${prefix}-${CSS.escape(item)}`);
-  const qty     = parseFloat(input ? input.value : 1);
+function trade(category, item, action, inputId) {
+  const input = document.getElementById(inputId);
+  const qty   = parseFloat(input ? input.value : 1);
   if (!qty || qty <= 0) { showNotice("请输入有效数量", "err"); return; }
   ws.send(JSON.stringify({ action, category, item, qty }));
 }
