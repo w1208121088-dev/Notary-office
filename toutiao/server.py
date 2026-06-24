@@ -1,10 +1,53 @@
 import asyncio
 import json
+import os
 import random
+import sqlite3
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
+
+VERSION = "v1.1"
+
+# ──────────────────────────────────────────────
+# 数据库（SQLite 持久化玩家档案）
+# ──────────────────────────────────────────────
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game.db")
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db.execute("""
+    CREATE TABLE IF NOT EXISTS players (
+        player_id TEXT PRIMARY KEY,
+        cash      REAL NOT NULL,
+        stones    TEXT NOT NULL,
+        rabbits   TEXT NOT NULL
+    )
+""")
+db.commit()
+
+def db_save_player(player_id: str, player: dict):
+    db.execute(
+        """INSERT INTO players (player_id, cash, stones, rabbits)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(player_id) DO UPDATE SET
+             cash=excluded.cash, stones=excluded.stones, rabbits=excluded.rabbits""",
+        (player_id, player["cash"], json.dumps(player["stones"]), json.dumps(player["rabbits"])),
+    )
+    db.commit()
+
+def db_load_player(player_id: str):
+    row = db.execute(
+        "SELECT cash, stones, rabbits FROM players WHERE player_id = ?", (player_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    cash, stones_json, rabbits_json = row
+    return {
+        "cash":    cash,
+        "stones":  json.loads(stones_json),
+        "rabbits": json.loads(rabbits_json),
+    }
 
 # ──────────────────────────────────────────────
 # 初始数据
@@ -167,11 +210,21 @@ async def websocket_endpoint(websocket: WebSocket, player_id: str):
     connections[player_id] = websocket
 
     if player_id not in players:
-        players[player_id] = {
-            "cash":    STARTING_CASH,
-            "stones":  {k: 0 for k in stone_prices},
-            "rabbits": {k: 0 for k in rabbit_prices},
-        }
+        saved = db_load_player(player_id)
+        if saved is not None:
+            # 兼容新增的商品：缺失的字段补0
+            for k in stone_prices:
+                saved["stones"].setdefault(k, 0)
+            for k in rabbit_prices:
+                saved["rabbits"].setdefault(k, 0)
+            players[player_id] = saved
+        else:
+            players[player_id] = {
+                "cash":    STARTING_CASH,
+                "stones":  {k: 0 for k in stone_prices},
+                "rabbits": {k: 0 for k in rabbit_prices},
+            }
+            db_save_player(player_id, players[player_id])
 
     await send_player(player_id, market_snapshot())
     await send_player(player_id, {"type": "player", "data": players[player_id]})
@@ -238,6 +291,7 @@ async def handle_trade(player_id: str, msg: dict, is_buy: bool):
         action_word = "卖出"
 
     apply_price_impact(prices, item, qty, is_buy)
+    db_save_player(player_id, player)
 
     await send_player(player_id, {
         "type": "trade_ok",
@@ -251,3 +305,4 @@ async def handle_trade(player_id: str, msg: dict, is_buy: bool):
 # ──────────────────────────────────────────────
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
