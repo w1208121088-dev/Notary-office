@@ -1,10 +1,14 @@
 import asyncio
 import json
+import os
 import random
+import sqlite3
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
+
+VERSION = "v1.1"
 
 # ──────────────────────────────────────────────
 # 初始数据
@@ -56,6 +60,45 @@ RABBITS_BASE = {
 STARTING_CASH = 100000
 
 # ──────────────────────────────────────────────
+# 数据库（SQLite 持久化玩家档案）
+# ──────────────────────────────────────────────
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game.db")
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db.execute("""
+    CREATE TABLE IF NOT EXISTS players (
+        player_id TEXT PRIMARY KEY,
+        cash      REAL NOT NULL,
+        stones    TEXT NOT NULL,
+        rabbits   TEXT NOT NULL
+    )
+""")
+db.commit()
+
+def db_save_player(player_id: str, player: dict):
+    db.execute(
+        """INSERT INTO players (player_id, cash, stones, rabbits)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(player_id) DO UPDATE SET
+             cash=excluded.cash, stones=excluded.stones, rabbits=excluded.rabbits""",
+        (player_id, player["cash"], json.dumps(player["stones"]), json.dumps(player["rabbits"])),
+    )
+    db.commit()
+
+def db_load_player(player_id: str):
+    row = db.execute(
+        "SELECT cash, stones, rabbits FROM players WHERE player_id = ?", (player_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    cash, stones_json, rabbits_json = row
+    return {
+        "cash":    cash,
+        "stones":  json.loads(stones_json),
+        "rabbits": json.loads(rabbits_json),
+    }
+
+# ──────────────────────────────────────────────
 # 运行时状态
 # ──────────────────────────────────────────────
 
@@ -87,20 +130,17 @@ def random_drift():
             prices[item] = round(max(base * 0.2, min(base * 5.0, prices[item] * (1 + drift))), 2)
 
 async def market_event():
-    """每2小时：随机5件商品大幅涨跌 10%~40%，并广播公告。"""
+    """每2小时：随机5件商品大幅涨跌 10%~40%，悄悄调整，不通知玩家。"""
     all_items = (
         [(stone_prices,  "stones",  k) for k in stone_prices] +
         [(rabbit_prices, "rabbits", k) for k in rabbit_prices]
     )
     chosen = random.sample(all_items, min(5, len(all_items)))
-    summaries = []
     for prices, _cat, item in chosen:
         direction = random.choice([1, -1])
         magnitude = random.uniform(0.10, 0.40)
         base      = (STONES_BASE.get(item) or RABBITS_BASE.get(item, {}).get("price", 1))
         prices[item] = round(max(base * 0.2, min(base * 5.0, prices[item] * (1 + direction * magnitude))), 2)
-        arrow = "↑" if direction == 1 else "↓"
-        summaries.append(f"{item} {arrow}{int(magnitude * 100)}%")
     pass  # 悄悄调整，不通知玩家
 
 # ──────────────────────────────────────────────
@@ -121,14 +161,6 @@ async def broadcast_market():
     for pid in dead:
         connections.pop(pid, None)
 
-async def broadcast_event(text: str):
-    msg = json.dumps({"type": "event", "msg": text})
-    for ws in list(connections.values()):
-        try:
-            await ws.send_text(msg)
-        except Exception:
-            pass
-
 async def send_player(player_id: str, data: dict):
     ws = connections.get(player_id)
     if ws:
@@ -146,7 +178,6 @@ async def drift_loop():
     while True:
         await asyncio.sleep(10)
         random_drift()
-        # 每 7200 秒（2小时）触发市场异动
         now = asyncio.get_event_loop().time()
         if now - last_event >= 7200:
             last_event = now
@@ -167,11 +198,20 @@ async def websocket_endpoint(websocket: WebSocket, player_id: str):
     connections[player_id] = websocket
 
     if player_id not in players:
-        players[player_id] = {
-            "cash":    STARTING_CASH,
-            "stones":  {k: 0 for k in stone_prices},
-            "rabbits": {k: 0 for k in rabbit_prices},
-        }
+        saved = db_load_player(player_id)
+        if saved is not None:
+            for k in stone_prices:
+                saved["stones"].setdefault(k, 0)
+            for k in rabbit_prices:
+                saved["rabbits"].setdefault(k, 0)
+            players[player_id] = saved
+        else:
+            players[player_id] = {
+                "cash":    STARTING_CASH,
+                "stones":  {k: 0 for k in stone_prices},
+                "rabbits": {k: 0 for k in rabbit_prices},
+            }
+            db_save_player(player_id, players[player_id])
 
     await send_player(player_id, market_snapshot())
     await send_player(player_id, {"type": "player", "data": players[player_id]})
@@ -238,6 +278,7 @@ async def handle_trade(player_id: str, msg: dict, is_buy: bool):
         action_word = "卖出"
 
     apply_price_impact(prices, item, qty, is_buy)
+    db_save_player(player_id, player)
 
     await send_player(player_id, {
         "type": "trade_ok",
